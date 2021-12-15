@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "fastapi-inertia"
+name = "starlette-inertia"
 version = "0.1.0"
 description = "Use InertiaJS with FastAPI"
 authors = ["Tony Lykke <tony@roganartu.com>"]
