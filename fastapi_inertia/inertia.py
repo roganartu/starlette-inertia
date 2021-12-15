@@ -1,29 +1,35 @@
 """
 FastAPI bindings for Inertia.js
 """
-
+import functools
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Union
 
+import starlette
 from flask import Flask, Markup, Response, current_app, request
 from flask_inertia.version import get_asset_version
 from jinja2 import Template
-from jsmin import jsmin
-import starlette
+from jsmin import jsmin  # TODO make this dep an extra
 from werkzeug.exceptions import BadRequest
 
 
 class InertiaMiddleware:
     """Inertia.js Middleware for FastAPI."""
 
-    def __init__(self, app: starlette.types.ASGIApp) -> None:
+    def __init__(
+        self,
+        app: starlette.types.ASGIApp,
+        asset_version: Union[Callable[[], str], str],
+    ) -> None:
         self.app = app
+        self.asset_version = asset_version
         # TODO other options?
-        # TODO add an asset version arg that can either be a const or a callable.
         # TODO add a jinja template var (optional) for overriding the index render.
         # TODO add vars to control various knobs in the rendered index html.
         # TODO add callable for inclusion in all response bodies.
         # TODO add an option for setting the Inertia.js asset URL (default to JS CDN).
+        # TODO add an option for the route object to generate js routes with. This needs
+        # to be able to exclude this wrapped app somehow, and maybe others.
 
     async def __call__(
         self,
@@ -41,65 +47,97 @@ class InertiaMiddleware:
         the server immediately returns a 409 Conflict response (only for GET request),
         and includes the URL in a X-Inertia-Location header.
         """
+        request = starlette.requests.Request(scope, receive)
+        wrapped_send = functools.partial(self.send, send=send, request=request)
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, wrapped_send)
             return
 
         method = scope["method"]
-        headers = starlette.datastructures.Headers(scope=scope)
-        render_html = False
-        if headers.get("x-requested-with") != "XMLHttpRequest":
+        if request.headers.get("x-requested-with") != "XMLHttpRequest":
             # Request is not AJAX, so it's probably a regular old browser GET.
             # Call the endpoint to get the data and then render the HTML.
-            # TODO
-            render_html = True
+            await self.app(
+                scope, receive, functools.partial(wrapped_send, as_html=True)
+            )
+            return
         else:
-            if not headers.get("x-inertia"):
-                response = starlette.responses.Response(
+            if not request.headers.get("x-inertia"):
+                response = starlette.responses.PlainTextResponse(
                     "Inertia headers not found.",
                     status_code=400,
-                    media_type="text/plain",
                 )
-                await response(scope, receive, send)
+                await response(scope, receive, wrapped_send)
                 return
 
             # Must be an Inertia request
-            # TODO check asset version and return x-inertia-location if required
-            # TODO call next step in app and wrap it, unless it returns an error.
+            server_version = (
+                self.asset_version()
+                if callable(self.asset_version)
+                else self.asset_version
+            )
+            client_version = request.headers.get("x-inertia-version")
+            if method == "GET" and client_version and client_version != server_version:
+                # Version doesn't match, return header telling inertia to refresh
+                response = starlette.responses.PlainTextResponse(
+                    "Inertia version does not match",
+                    status_code=409,
+                    headers={"X-Inertia-Location": request.url},
+                )
+                await response(scope, receive, wrapped_send)
+                return
 
-        # TODO if render_html is true, render the JSON response into the HTML body via
-        # jinja.
-        raise NotImplementedError()
+        # Just call the regular app. The route handler should return an InertiaResponse
+        # object, which we'll handle in self.send below.
+        await self.app(scope, receive, wrapped_send)
 
-    def process_incoming_inertia_requests(self) -> Optional[Response]:
-        # check inertia version
-        server_version = get_asset_version()
-        inertia_version = request.headers.get("X-Inertia-Version")
-        if (
-            request.method == "GET"
-            and inertia_version
-            and inertia_version != server_version
-        ):
-            response = Response("Inertia versions does not match", status=409)
-            response.headers["X-Inertia-Location"] = request.full_path
-            return response
-
-        return None
-
-    def update_redirect(self, response: Response) -> Response:
-        """Update redirect to set 303 status code.
-
-        409 conflict responses are only sent for GET requests, and not for
-        POST/PUT/PATCH/DELETE requests. That said, they will be sent in the
-        event that a GET redirect occurs after one of these requests. To force
-        Inertia to use a GET request after a redirect, the 303 HTTP status is used
-
-        :param response: The generated response to update
+    async def send(
+        self,
+        message: starlette.types.Message,
+        send: starlette.types.Send,
+        request: starlette.types.Request,
+        as_html: bool = False,
+    ) -> None:
         """
-        if request.method in ["PUT", "PATCH", "DELETE"] and response.status_code == 302:
-            response.status_code = 303
+        Wrap the processing of the request/response with the inertia protocol.
 
-        return response
+        This function is where most of the magic happens.
+        """
+        # Update redirect to set 303 status code.
+        #
+        # 409 conflict responses are only sent for GET requests, and not for
+        # POST/PUT/PATCH/DELETE requests. That said, they will be sent in the
+        # event that a GET redirect occurs after one of these requests.
+        #
+        # Returning a 303 ensures that the browser follows with a GET, while a 302
+        # doesn't necessarily guarantee it.
+        if message["type"] == "http.response.start":
+            if (
+                request.method in {"PUT", "PATCH", "DELETE"}
+                and message["status"] == 302
+            ):
+                # TODO does this work?
+                headers = starlette.datastructures.MutableHeaders(
+                    scope=message["headers"]
+                )
+                headers.set("Location", headers.get("Location"))
+                await send(
+                    {
+                        "type": message["type"],
+                        "status": 303,
+                        "headers": headers.raw,
+                    }
+                )
+            else:
+                await send(message)
+            return
+        # TODO handle other message types here, like request body starts, and sprinkle
+        # in the inertia stuff.
+        # TODO if as_html, then render JSON into string and render into index template,
+        # otherwise return JSON directly.
+        # TODO make sure inertia headers are set in the response.
+
+        await send(message)
 
     def share(self, key: str, value: Any):
         """Preassign shared data for each request.
