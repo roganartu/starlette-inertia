@@ -7,8 +7,12 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.6"
+starlette = "*"
 
 [tool.poetry.dev-dependencies]
+black = "<21.12b0"
+isort = "<5.10"
+pyright = "^0.0.13"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
