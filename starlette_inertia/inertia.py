@@ -48,7 +48,8 @@ class InertiaMiddleware:
         and includes the URL in a X-Inertia-Location header.
         """
         request = starlette.requests.Request(scope, receive)
-        wrapped_send = functools.partial(self.send, send=send, request=request)
+        responder = InertiaResponder(self.app, inertia_version=self._inertia_version)
+        wrapped_send = functools.partial(responder.send, send=send, request=request)
         if scope["type"] != "http":
             await self.app(scope, receive, wrapped_send)
             return
@@ -71,11 +72,7 @@ class InertiaMiddleware:
                 return
 
             # Must be an Inertia request
-            server_version = (
-                self.asset_version()
-                if callable(self.asset_version)
-                else self.asset_version
-            )
+            server_version = self._inertia_version
             client_version = request.headers.get("x-inertia-version")
             if method == "GET" and client_version and client_version != server_version:
                 # Version doesn't match, return header telling inertia to refresh
@@ -87,9 +84,20 @@ class InertiaMiddleware:
                 await response(scope, receive, wrapped_send)
                 return
 
-        # Just call the regular app. The route handler should return an InertiaResponse
-        # object, which we'll handle in self.send below.
         await self.app(scope, receive, wrapped_send)
+
+    @property
+    def _inertia_version(self) -> str:
+        return (
+            self.asset_version() if callable(self.asset_version) else self.asset_version
+        )
+
+
+class InertiaResponder:
+    def __init__(self, app: starlette.types.ASGIApp, inertia_version: str) -> None:
+        self.app = app
+        self._inertia_version = inertia_version
+        self.started = False
 
     async def send(
         self,
@@ -111,16 +119,14 @@ class InertiaMiddleware:
         #
         # Returning a 303 ensures that the browser follows with a GET, while a 302
         # doesn't necessarily guarantee it.
+        headers = starlette.datastructures.MutableHeaders(scope=message["headers"])
         if message["type"] == "http.response.start":
             if (
                 request.method in {"PUT", "PATCH", "DELETE"}
                 and message["status"] == 302
             ):
                 # TODO does this work?
-                headers = starlette.datastructures.MutableHeaders(
-                    scope=message["headers"]
-                )
-                headers.set("Location", headers.get("Location"))
+                headers["Location"] = headers.get("Location")
                 await send(
                     {
                         "type": message["type"],
@@ -129,15 +135,36 @@ class InertiaMiddleware:
                     }
                 )
             else:
-                await send(message)
+                headers["X-Inertia"] = "true"
+                if as_html:
+                    headers["Content-Type"] = "text/html"
+                else:
+                    headers["Content-Type"] = "application/json"
+                    if not any(
+                        [
+                            x in headers
+                            for x in [
+                                "x-inertia-partial-data",
+                                "x-inertia-partial-component",
+                            ]
+                        ]
+                    ):
+                        headers.add_vary_header("Accept")
+                # Don't send the message until we can figure out what the content-length
+                # needs to be.
+                self.message = message
             return
-        # TODO handle other message types here, like request body starts, and sprinkle
-        # in the inertia stuff.
-        # TODO if as_html, then render JSON into string and render into index template,
-        # otherwise return JSON directly.
-        # TODO make sure inertia headers are set in the response.
-
-        await send(message)
+        elif message["type"] == "http.response.body" and not self.started:
+            self.started = True
+            body = message.get("body", b"")
+            more_body = message.get("more_body", False)
+            # TODO figure out if we should wrap in HTML, then update content-type
+            # and send self.initial_message
+            # TODO should we only do this on 2xx?
+            # TODO create InertiaResponse that expects component and props. We need to
+            # figure out how to inject the asset version before marshalling though.
+        else:
+            await send(message)
 
     def share(self, key: str, value: Any):
         """Preassign shared data for each request.
