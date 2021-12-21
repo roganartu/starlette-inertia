@@ -6,11 +6,8 @@ import os
 from typing import Any, Callable, Union
 
 import starlette
-from flask import Flask, Markup, Response, current_app, request
-from flask_inertia.version import get_asset_version
-from jinja2 import Template
-from jsmin import jsmin  # TODO make this dep an extra
-from werkzeug.exceptions import BadRequest
+import starlette.requests
+import starlette.types
 
 
 class InertiaMiddleware:
@@ -103,7 +100,7 @@ class InertiaResponder:
         self,
         message: starlette.types.Message,
         send: starlette.types.Send,
-        request: starlette.types.Request,
+        request: starlette.requests.Request,
         as_html: bool = False,
     ) -> None:
         """
@@ -195,7 +192,7 @@ class InertiaResponder:
             "inertia": current_app.extensions["inertia"],
         }
 
-    def include_router(self) -> Markup:
+    def include_router(self) -> None:
         """Include JS router in Templates."""
         router_file = os.path.join(
             os.path.abspath(os.path.dirname(__file__)), "router.js"
