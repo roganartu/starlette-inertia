@@ -116,7 +116,9 @@ class InertiaResponder:
         #
         # Returning a 303 ensures that the browser follows with a GET, while a 302
         # doesn't necessarily guarantee it.
-        headers = starlette.datastructures.MutableHeaders(scope=message["headers"])
+        if "headers" not in message:
+            message["headers"] = {}
+        headers = starlette.datastructures.MutableHeaders(scope=message)
         if message["type"] == "http.response.start":
             if (
                 request.method in {"PUT", "PATCH", "DELETE"}
@@ -160,6 +162,8 @@ class InertiaResponder:
             # TODO should we only do this on 2xx?
             # TODO create InertiaResponse that expects component and props. We need to
             # figure out how to inject the asset version before marshalling though.
+            await send(self.message)
+            await send(message)
         else:
             await send(message)
 
