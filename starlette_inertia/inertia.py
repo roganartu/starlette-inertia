@@ -7,7 +7,51 @@ from typing import Any, Callable, Union
 
 import starlette
 import starlette.requests
+import starlette.responses
 import starlette.types
+
+
+class InertiaResponse(starlette.responses.JSONResponse):
+    def __init__(self, *args, component: str = None, **kwargs) -> None:
+        if component is None:
+            raise ValueError("Must provide component to InertiaResponse.")
+        self.component = component
+        self.content = None
+        super().__init__(*args, **kwargs)
+
+    def render(self, content: Any) -> bytes:
+        # Delay rendering until we've gotten a header back from the send of
+        # http.response.start.
+        self.content = content
+        return b""
+
+    async def __call__(
+        self,
+        scope: starlette.types.Scope,
+        receive: starlette.types.Receive,
+        send: starlette.types.Send,
+    ) -> None:
+        del scope, receive
+        await send(
+            {
+                "type": "http.response.start",
+                "status": self.status_code,
+                "headers": self.raw_headers,
+            }
+        )
+        inertia_version = self.headers.get("X-Inertia-Internal-Version", None)
+        del self.headers["X-Inertia-Internal-Version"]
+        content = {
+            "component": self.component,
+            "version": inertia_version,
+            "props": self.content,
+            # TODO add url - where to get from?
+        }
+        self.body = super().render(content)
+        await send({"type": "http.response.body", "body": self.body})
+
+        if self.background is not None:
+            await self.background()
 
 
 class InertiaMiddleware:
@@ -55,7 +99,7 @@ class InertiaMiddleware:
         if request.headers.get("x-requested-with") != "XMLHttpRequest":
             # Request is not AJAX, so it's probably a regular old browser GET.
             # Call the endpoint to get the data and then render the HTML.
-            await self.app(
+            resp = await self.app(
                 scope, receive, functools.partial(wrapped_send, as_html=True)
             )
             return
@@ -149,6 +193,9 @@ class InertiaResponder:
                         ]
                     ):
                         headers.add_vary_header("Accept")
+                # Pass a header back to the response __call__ so it can add the asset
+                # version to the JSON response object.
+                headers["X-Inertia-Internal-Version"] = self._inertia_version
                 # Don't send the message until we can figure out what the content-length
                 # needs to be.
                 self.message = message

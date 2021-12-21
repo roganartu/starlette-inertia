@@ -1,3 +1,3 @@
-from starlette_inertia.inertia import InertiaMiddleware
+from starlette_inertia.inertia import InertiaMiddleware, InertiaResponse
 
-__all__ = ["InertiaMiddleware"]
+__all__ = ["InertiaMiddleware", "InertiaResponse"]
