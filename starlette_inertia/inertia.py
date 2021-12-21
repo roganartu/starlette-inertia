@@ -40,12 +40,14 @@ class InertiaResponse(starlette.responses.JSONResponse):
             }
         )
         inertia_version = self.headers.get("X-Inertia-Internal-Version", None)
+        inertia_url = self.headers.get("X-Inertia-Internal-Path", None)
         del self.headers["X-Inertia-Internal-Version"]
+        del self.headers["X-Inertia-Internal-Path"]
         content = {
             "component": self.component,
             "version": inertia_version,
             "props": self.content,
-            # TODO add url - where to get from?
+            "url": inertia_url,
         }
         self.body = super().render(content)
         await send({"type": "http.response.body", "body": self.body})
@@ -115,12 +117,12 @@ class InertiaMiddleware:
             # Must be an Inertia request
             server_version = self._inertia_version
             client_version = request.headers.get("x-inertia-version")
-            if method == "GET" and client_version and client_version != server_version:
+            if method == "GET" and client_version != server_version:
                 # Version doesn't match, return header telling inertia to refresh
                 response = starlette.responses.PlainTextResponse(
                     "Inertia version does not match",
                     status_code=409,
-                    headers={"X-Inertia-Location": request.url},
+                    headers={"X-Inertia-Location": str(request.url)},
                 )
                 await response(scope, receive, wrapped_send)
                 return
@@ -196,6 +198,8 @@ class InertiaResponder:
                 # Pass a header back to the response __call__ so it can add the asset
                 # version to the JSON response object.
                 headers["X-Inertia-Internal-Version"] = self._inertia_version
+                # TODO does this need more? fragment?
+                headers["X-Inertia-Internal-Path"] = request.url.path
                 # Don't send the message until we can figure out what the content-length
                 # needs to be.
                 self.message = message
