@@ -9,6 +9,9 @@
     {% for script in scripts %}
         <script src="{{ script }}" defer></script>
     {% endfor %}
+    <script lang="javascript">
+        {{ routes_script -}}
+    </script>
   </head>
   <body>
     <div id="app" data-page='{{ body.decode("utf8") }}'></div>

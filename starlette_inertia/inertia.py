@@ -73,6 +73,7 @@ class InertiaMiddleware:
         scripts: Optional[List[str]] = None,
         links: Optional[List[str]] = None,
         index_template_path: Optional[Union[str, pathlib.Path]] = None,
+        routes_js_template_path: Optional[Union[str, pathlib.Path]] = None,
         props_callback: Optional[
             Callable[[starlette.requests.Request], Dict[str, Any]]
         ] = None,
@@ -80,18 +81,25 @@ class InertiaMiddleware:
         self.app = app
         self.asset_version = asset_version
         self.props_callback = props_callback
-        template_path = pathlib.Path(__file__).parent / "index.html.jinja2"
-        if index_template_path is not None:
-            template_path = pathlib.Path(index_template_path)
+
+        template_path = (
+            pathlib.Path(index_template_path or __file__).parent / "index.html.jinja2"
+        )
         with open(template_path) as f:
             self.template = jinja2.Template(f.read())
+
+        routes_template_path = (
+            pathlib.Path(routes_js_template_path or __file__).parent
+            / "routes.js.jinja2"
+        )
+        with open(routes_template_path) as f:
+            self.routes_template = jinja2.Template(f.read())
+
         self.extra_template_data = {
             "scripts": scripts or [],
             "links": links or [],
         }
         # TODO render func to replace the default template logic?
-        # TODO add an option for the route object to generate js routes with. This needs
-        # to be able to exclude this wrapped app somehow, and maybe others.
 
     async def __call__(
         self,
@@ -116,6 +124,9 @@ class InertiaMiddleware:
             self.app,
             template=self.template,
             extra_template_data=self.extra_template_data,
+            rendered_routes_js=self.routes_template.render(
+                routes={r.name: r.path for r in request.app.routes}
+            ),
         )
         wrapped_send = functools.partial(responder.send, send=send, request=request)
         if scope["type"] != "http":
@@ -167,11 +178,13 @@ class InertiaResponder:
         app: starlette.types.ASGIApp,
         template: jinja2.Template,
         extra_template_data: Dict[str, Any],
+        rendered_routes_js: str,
     ) -> None:
         self.app = app
         self.started = False
         self.template = template
         self.extra_template_data = extra_template_data
+        self.rendered_routes_js = rendered_routes_js
 
     async def send(
         self,
@@ -243,6 +256,7 @@ class InertiaResponder:
                 # TODO should we only do this on 2xx?
                 template_context = {
                     "body": body,
+                    "routes_script": self.rendered_routes_js,
                 }
                 template_context.update(self.extra_template_data)
                 message["body"] = self.template.render(**template_context).encode()
@@ -251,50 +265,3 @@ class InertiaResponder:
             await send(message)
         else:
             await send(message)
-
-    def share(self, key: str, value: Any):
-        """Preassign shared data for each request.
-
-        Sometimes you need to access certain data on numerous pages within your
-        application. For example, a common use-case for this is showing the
-        current user in the site header. Passing this data manually in each
-        response isn't practical. In these situations shared data can be useful.
-
-        :param key: Data key to share between requests
-        :param value: Data value or Function returning the data value
-        """
-        self._shared_data[key] = value
-
-    @staticmethod
-    def context_processor():
-        """Add an `inertia` directive to Jinja2 template to allow router inclusion
-
-        .. code-block:: html
-
-           <head>
-             <script lang="javascript">
-               {{ inertia.include_router() }}
-             </script>
-           </head>
-        """
-        return {
-            "inertia": current_app.extensions["inertia"],
-        }
-
-    def include_router(self) -> None:
-        """Include JS router in Templates."""
-        router_file = os.path.join(
-            os.path.abspath(os.path.dirname(__file__)), "router.js"
-        )
-        routes = {rule.endpoint: rule.rule for rule in current_app.url_map.iter_rules()}
-        with open(router_file, "r") as jsfile:
-            template = Template(jsfile.read())
-            # Jinja2 template automatically get rid of ['<'|'>'] chars
-            content = (
-                template.render(routes=routes)
-                .replace("\\u003c", "<")
-                .replace("\\u003e", ">")
-            )
-            content_minified = jsmin(content)
-
-        return Markup(content_minified)
