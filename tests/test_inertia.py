@@ -1,5 +1,5 @@
 import json
-from typing import Dict
+from typing import Any, Callable, Dict, Optional
 
 import bs4
 import pytest
@@ -151,8 +151,69 @@ class TestMiddleware:
         assert data.get("url", None) == "/"
         assert data.get("props", None) == {"foo": "bar"}
 
+    @pytest.mark.parametrize(
+        "callback, extra_headers, expected",
+        [
+            # No callable
+            [
+                None,
+                {},
+                {"foo": "bar"},
+            ],
+            # Callable adds bar
+            [
+                lambda x: {"bar": "foo"},
+                {},
+                {"foo": "bar", "bar": "foo"},
+            ],
+            # Callable overrides foo
+            [
+                lambda x: {"foo": "baz"},
+                {},
+                {"foo": "bar"},
+            ],
+        ],
+    )
+    def test_props_callback(
+        self,
+        callback: Optional[Callable[[starlette.requests.Request], Dict[str, Any]]],
+        extra_headers: Dict[str, str],
+        expected: Dict[str, Any],
+    ) -> None:
+        # TODO add tests for custom templates
+        app = starlette.applications.Starlette(
+            debug=True,
+            routes=[
+                starlette.routing.Route("/", index_handler),
+            ],
+            middleware=[
+                starlette.middleware.Middleware(
+                    target.InertiaMiddleware,
+                    asset_version="foo",
+                    props_callback=callback,
+                ),
+            ],
+        )
 
-# TODO add test that asserts the returned HTML is the expected structure
+        client = starlette.testclient.TestClient(app)
+        headers = dict(
+            {
+                "x-requested-with": "XMLHttpRequest",
+                "x-inertia": "true",
+                "x-inertia-version": "foo",
+            },
+            **extra_headers
+        )
+        response = client.get("/", headers=headers)
+        assert response.status_code == 200
+        assert response.headers.get("Content-Type", None) == "application/json"
+        assert response.json() == {
+            "component": "Test",
+            "props": expected,
+            "version": "foo",
+            "url": "/",
+        }
+
 
 # TODO add test that asserts that passed templates are rendered correctly
 

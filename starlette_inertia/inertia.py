@@ -42,15 +42,20 @@ class InertiaResponse(starlette.responses.JSONResponse):
                 "headers": self.raw_headers,
             }
         )
-        inertia_version = self.headers.get("X-Inertia-Internal-Version", None)
-        del self.headers["X-Inertia-Internal-Version"]
         content = {
             "component": self.component,
-            "version": inertia_version,
-            # TODO check partial headers and drop keys from self.content
+            "version": request.state.inertia_version,
             "props": self.content,
             "url": request.url.path,
         }
+        if (
+            hasattr(request.state, "inertia_props_callback")
+            and request.state.inertia_props_callback is not None
+        ):
+            content["props"] = dict(
+                request.state.inertia_props_callback(request), **self.content
+            )
+        # TODO check partial headers and drop keys from content["props"]
         self.body = super().render(content)
         await send({"type": "http.response.body", "body": self.body})
 
@@ -68,9 +73,13 @@ class InertiaMiddleware:
         scripts: Optional[List[str]] = None,
         links: Optional[List[str]] = None,
         index_template_path: Optional[Union[str, pathlib.Path]] = None,
+        props_callback: Optional[
+            Callable[[starlette.requests.Request], Dict[str, Any]]
+        ] = None,
     ) -> None:
         self.app = app
         self.asset_version = asset_version
+        self.props_callback = props_callback
         template_path = pathlib.Path(__file__).parent / "index.html.jinja2"
         if index_template_path is not None:
             template_path = pathlib.Path(index_template_path)
@@ -80,7 +89,6 @@ class InertiaMiddleware:
             "scripts": scripts or [],
             "links": links or [],
         }
-        # TODO add callable for inclusion in all response bodies.
         # TODO render func to replace the default template logic?
         # TODO add an option for the route object to generate js routes with. This needs
         # to be able to exclude this wrapped app somehow, and maybe others.
@@ -102,9 +110,10 @@ class InertiaMiddleware:
         and includes the URL in a X-Inertia-Location header.
         """
         request = starlette.requests.Request(scope, receive)
+        request.state.inertia_version = self._inertia_version
+        request.state.inertia_props_callback = self.props_callback
         responder = InertiaResponder(
             self.app,
-            inertia_version=self._inertia_version,
             template=self.template,
             extra_template_data=self.extra_template_data,
         )
@@ -156,12 +165,10 @@ class InertiaResponder:
     def __init__(
         self,
         app: starlette.types.ASGIApp,
-        inertia_version: str,
         template: jinja2.Template,
         extra_template_data: Dict[str, Any],
     ) -> None:
         self.app = app
-        self._inertia_version = inertia_version
         self.started = False
         self.template = template
         self.extra_template_data = extra_template_data
@@ -219,9 +226,6 @@ class InertiaResponder:
                         ]
                     ):
                         headers.add_vary_header("Accept")
-                # Pass a header back to the response __call__ so it can add the asset
-                # version and url to the JSON response object.
-                headers["X-Inertia-Internal-Version"] = self._inertia_version
                 # Don't send the message until we can figure out what the content-length
                 # needs to be.
                 self.message = message
@@ -241,11 +245,6 @@ class InertiaResponder:
                     "body": body,
                 }
                 template_context.update(self.extra_template_data)
-                if "X-Inertia-Internal-Context" in headers:
-                    template_context.update(
-                        json.loads(headers["X-Inertia-Internal-Context"])
-                    )
-                    del headers["X-Inertia-Internal-Context"]
                 message["body"] = self.template.render(**template_context).encode()
                 headers["Content-Length"] = str(len(message["body"]))
             await send(self.message)
