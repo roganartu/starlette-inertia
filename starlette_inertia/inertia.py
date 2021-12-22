@@ -34,7 +34,7 @@ class InertiaResponse(starlette.responses.JSONResponse):
         receive: starlette.types.Receive,
         send: starlette.types.Send,
     ) -> None:
-        del scope, receive
+        request = starlette.requests.Request(scope, receive)
         await send(
             {
                 "type": "http.response.start",
@@ -43,14 +43,13 @@ class InertiaResponse(starlette.responses.JSONResponse):
             }
         )
         inertia_version = self.headers.get("X-Inertia-Internal-Version", None)
-        inertia_url = self.headers.get("X-Inertia-Internal-Path", None)
         del self.headers["X-Inertia-Internal-Version"]
-        del self.headers["X-Inertia-Internal-Path"]
         content = {
             "component": self.component,
             "version": inertia_version,
+            # TODO check partial headers and drop keys from self.content
             "props": self.content,
-            "url": inertia_url,
+            "url": request.url.path,
         }
         self.body = super().render(content)
         await send({"type": "http.response.body", "body": self.body})
@@ -118,7 +117,7 @@ class InertiaMiddleware:
         if request.headers.get("x-requested-with") != "XMLHttpRequest":
             # Request is not AJAX, so it's probably a regular old browser GET.
             # Call the endpoint to get the data and then render the HTML.
-            resp = await self.app(
+            await self.app(
                 scope, receive, functools.partial(wrapped_send, as_html=True)
             )
             return
@@ -223,8 +222,6 @@ class InertiaResponder:
                 # Pass a header back to the response __call__ so it can add the asset
                 # version and url to the JSON response object.
                 headers["X-Inertia-Internal-Version"] = self._inertia_version
-                # TODO does this need more? fragment?
-                headers["X-Inertia-Internal-Path"] = request.url.path
                 # Don't send the message until we can figure out what the content-length
                 # needs to be.
                 self.message = message
