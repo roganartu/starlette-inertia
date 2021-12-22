@@ -1,6 +1,7 @@
-import unittest.mock
+import json
 from typing import Dict
 
+import bs4
 import pytest
 import starlette.applications
 import starlette.responses
@@ -36,6 +37,23 @@ class TestMiddleware:
                 },
                 "/",
                 200,
+                False,
+            ],
+            # Unknown route
+            [
+                {},
+                "/unknown",
+                404,
+                True,
+            ],
+            [
+                {
+                    "x-requested-with": "XMLHttpRequest",
+                    "x-inertia": "true",
+                    "x-inertia-version": "foo",
+                },
+                "/unknown",
+                404,
                 False,
             ],
             # Basic AJAX request, but erroneously missing the inertia header.
@@ -106,6 +124,32 @@ class TestMiddleware:
         else:
             assert response.headers.get("Content-Type", None) == "application/json"
         assert response.headers.get("X-Inertia", None) == "true"
+
+    def test_html(self) -> None:
+        # TODO add tests for custom templates
+        app = starlette.applications.Starlette(
+            debug=True,
+            routes=[
+                starlette.routing.Route("/", index_handler),
+            ],
+            middleware=[
+                starlette.middleware.Middleware(
+                    target.InertiaMiddleware, asset_version="foo"
+                ),
+            ],
+        )
+
+        client = starlette.testclient.TestClient(app)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert response.headers.get("Content-Type", None) == "text/html"
+        soup = bs4.BeautifulSoup(response.text, "html.parser")
+        assert len(soup.body.find_all("div")) == 1
+        data = json.loads(soup.body.find_all("div")[0].get("data-page"))
+        assert data.get("component", None) == "Test"
+        assert data.get("version", None) == "foo"
+        assert data.get("url", None) == "/"
+        assert data.get("props", None) == {"foo": "bar"}
 
 
 # TODO add test that asserts the returned HTML is the expected structure
