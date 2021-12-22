@@ -2,9 +2,12 @@
 FastAPI bindings for Inertia.js
 """
 import functools
+import json
 import os
-from typing import Any, Callable, Union
+import pathlib
+from typing import Any, Callable, Dict, List, Optional, Union
 
+import jinja2
 import starlette
 import starlette.requests
 import starlette.responses
@@ -63,14 +66,23 @@ class InertiaMiddleware:
         self,
         app: starlette.types.ASGIApp,
         asset_version: Union[Callable[[], str], str],
+        scripts: Optional[List[str]] = None,
+        links: Optional[List[str]] = None,
+        index_template_path: Optional[Union[str, pathlib.Path]] = None,
     ) -> None:
         self.app = app
         self.asset_version = asset_version
-        # TODO other options?
-        # TODO add a jinja template var (optional) for overriding the index render.
-        # TODO add vars to control various knobs in the rendered index html.
+        template_path = pathlib.Path(__file__).parent / "index.html.jinja2"
+        if index_template_path is not None:
+            template_path = pathlib.Path(index_template_path)
+        with open(template_path) as f:
+            self.template = jinja2.Template(f.read())
+        self.extra_template_data = {
+            "scripts": scripts or [],
+            "links": links or [],
+        }
         # TODO add callable for inclusion in all response bodies.
-        # TODO add an option for setting the Inertia.js asset URL (default to JS CDN).
+        # TODO render func to replace the default template logic?
         # TODO add an option for the route object to generate js routes with. This needs
         # to be able to exclude this wrapped app somehow, and maybe others.
 
@@ -91,7 +103,12 @@ class InertiaMiddleware:
         and includes the URL in a X-Inertia-Location header.
         """
         request = starlette.requests.Request(scope, receive)
-        responder = InertiaResponder(self.app, inertia_version=self._inertia_version)
+        responder = InertiaResponder(
+            self.app,
+            inertia_version=self._inertia_version,
+            template=self.template,
+            extra_template_data=self.extra_template_data,
+        )
         wrapped_send = functools.partial(responder.send, send=send, request=request)
         if scope["type"] != "http":
             await self.app(scope, receive, wrapped_send)
@@ -137,10 +154,18 @@ class InertiaMiddleware:
 
 
 class InertiaResponder:
-    def __init__(self, app: starlette.types.ASGIApp, inertia_version: str) -> None:
+    def __init__(
+        self,
+        app: starlette.types.ASGIApp,
+        inertia_version: str,
+        template: jinja2.Template,
+        extra_template_data: Dict[str, Any],
+    ) -> None:
         self.app = app
         self._inertia_version = inertia_version
         self.started = False
+        self.template = template
+        self.extra_template_data = extra_template_data
 
     async def send(
         self,
@@ -163,7 +188,7 @@ class InertiaResponder:
         # Returning a 303 ensures that the browser follows with a GET, while a 302
         # doesn't necessarily guarantee it.
         if "headers" not in message:
-            message["headers"] = {}
+            message["headers"] = []
         headers = starlette.datastructures.MutableHeaders(scope=message)
         if message["type"] == "http.response.start":
             if (
@@ -196,7 +221,7 @@ class InertiaResponder:
                     ):
                         headers.add_vary_header("Accept")
                 # Pass a header back to the response __call__ so it can add the asset
-                # version to the JSON response object.
+                # version and url to the JSON response object.
                 headers["X-Inertia-Internal-Version"] = self._inertia_version
                 # TODO does this need more? fragment?
                 headers["X-Inertia-Internal-Path"] = request.url.path
@@ -208,11 +233,24 @@ class InertiaResponder:
             self.started = True
             body = message.get("body", b"")
             more_body = message.get("more_body", False)
-            # TODO figure out if we should wrap in HTML, then update content-type
-            # and send self.initial_message
-            # TODO should we only do this on 2xx?
-            # TODO create InertiaResponse that expects component and props. We need to
-            # figure out how to inject the asset version before marshalling though.
+            # TODO figure out what to do if more_body is true, how can we handle that?
+            if more_body:
+                raise ValueError("Streaming responses are not supported.")
+            # TODO add support for partial reloading via X-Inertia-Partial-* headers.
+            if as_html:
+                # TODO call provided callable if not None, pass in jinja context
+                # TODO should we only do this on 2xx?
+                template_context = {
+                    "body": body,
+                }
+                template_context.update(self.extra_template_data)
+                if "X-Inertia-Internal-Context" in headers:
+                    template_context.update(
+                        json.loads(headers["X-Inertia-Internal-Context"])
+                    )
+                    del headers["X-Inertia-Internal-Context"]
+                message["body"] = self.template.render(**template_context).encode()
+                headers["Content-Length"] = str(len(message["body"]))
             await send(self.message)
             await send(message)
         else:

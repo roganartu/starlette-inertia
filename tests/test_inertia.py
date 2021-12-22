@@ -108,10 +108,11 @@ class TestMiddleware:
         assert response.headers.get("X-Inertia", None) == "true"
 
 
+# TODO add test that asserts the returned HTML is the expected structure
+
+# TODO add test that asserts that passed templates are rendered correctly
+
 # TODO add test that assert the structure of the returned JSON objects.
 
 # TODO add tests that assert that the returned X-Inertia-Location header on 409s is
 # correct.
-
-# TODO add tests that AJAX requests return the wrapper HTML, and that partial
-# requests return JSON

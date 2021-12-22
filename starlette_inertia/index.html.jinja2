@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% for link in links %}
+        <link href="{{ link }}" rel="stylesheet" />
+    {% endfor %}
+    {% for script in scripts %}
+        <script src="{{ script }}" defer></script>
+    {% endfor %}
+  </head>
+  <body>
+    <div id="app" data-page='{{ body.decode("utf8") }}'></div>
+  </body>
+</html>
