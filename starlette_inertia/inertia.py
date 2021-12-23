@@ -53,7 +53,14 @@ class InertiaResponse(starlette.responses.JSONResponse):
             content["props"] = dict(
                 request.state.inertia_props_callback(request), **self.content
             )
-        # TODO check partial headers and drop keys from content["props"]
+        if (
+            request.headers.get("x-inertia-partial-component") == content["component"]
+            and "x-inertia-partial-data" in request.headers
+        ):
+            to_return = set(request.headers["x-inertia-partial-data"].split(","))
+            for k in list(content["props"]):
+                if k not in to_return:
+                    del content["props"][k]
         self.body = super().render(content)
         await send({"type": "http.response.body", "body": self.body})
 
@@ -248,7 +255,6 @@ class InertiaResponder:
             # TODO figure out what to do if more_body is true, how can we handle that?
             if more_body:
                 raise ValueError("Streaming responses are not supported.")
-            # TODO add support for partial reloading via X-Inertia-Partial-* headers.
             if as_html:
                 # TODO call provided callable if not None, pass in jinja context
                 # TODO should we only do this on 2xx?

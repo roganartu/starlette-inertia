@@ -12,7 +12,17 @@ import starlette_inertia as target
 
 
 def index_handler(request: starlette.requests.Request) -> starlette.responses.Response:
+    del request
     return target.InertiaResponse({"foo": "bar"}, component="Test")
+
+
+def multi_component_handler(
+    request: starlette.requests.Request,
+) -> starlette.responses.Response:
+    del request
+    return target.InertiaResponse(
+        {"foo": "bar", "bar": "baz", "baz": "foo"}, component="Test"
+    )
 
 
 class TestMiddleware:
@@ -191,6 +201,84 @@ class TestMiddleware:
                     target.InertiaMiddleware,
                     asset_version="foo",
                     props_callback=callback,
+                ),
+            ],
+        )
+
+        client = starlette.testclient.TestClient(app)
+        headers = dict(
+            {
+                "x-requested-with": "XMLHttpRequest",
+                "x-inertia": "true",
+                "x-inertia-version": "foo",
+            },
+            **extra_headers
+        )
+        response = client.get("/", headers=headers)
+        assert response.status_code == 200
+        assert response.headers.get("Content-Type", None) == "application/json"
+        assert response.json() == {
+            "component": "Test",
+            "props": expected,
+            "version": "foo",
+            "url": "/",
+        }
+
+    @pytest.mark.parametrize(
+        "extra_headers, expected",
+        [
+            # Component matches, no partial headers
+            [
+                {},
+                {"foo": "bar", "bar": "baz", "baz": "foo"},
+            ],
+            # Component matches, partial headers return only a single prop
+            [
+                {
+                    "X-Inertia-Partial-Component": "Test",
+                    "X-Inertia-Partial-Data": "foo",
+                },
+                {"foo": "bar"},
+            ],
+            # Component matches, multiple props specified as csv
+            [
+                {
+                    "X-Inertia-Partial-Component": "Test",
+                    "X-Inertia-Partial-Data": "foo,bar",
+                },
+                {"foo": "bar", "bar": "baz"},
+            ],
+            # Component doesn't match, all props returned
+            [
+                {
+                    "X-Inertia-Partial-Component": "Nomatch",
+                    "X-Inertia-Partial-Data": "foo",
+                },
+                {"foo": "bar", "bar": "baz", "baz": "foo"},
+            ],
+            # Component matches, but no -Data header present
+            [
+                {
+                    "X-Inertia-Partial-Component": "Test",
+                },
+                {"foo": "bar", "bar": "baz", "baz": "foo"},
+            ],
+        ],
+    )
+    def test_partial(
+        self,
+        extra_headers: Dict[str, str],
+        expected: Dict[str, Any],
+    ) -> None:
+        app = starlette.applications.Starlette(
+            debug=True,
+            routes=[
+                starlette.routing.Route("/", multi_component_handler),
+            ],
+            middleware=[
+                starlette.middleware.Middleware(
+                    target.InertiaMiddleware,
+                    asset_version="foo",
                 ),
             ],
         )
