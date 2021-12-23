@@ -190,7 +190,6 @@ class TestMiddleware:
         extra_headers: Dict[str, str],
         expected: Dict[str, Any],
     ) -> None:
-        # TODO add tests for custom templates
         app = starlette.applications.Starlette(
             debug=True,
             routes=[
