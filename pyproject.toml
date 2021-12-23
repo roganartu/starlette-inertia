@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "starlette-inertia"
-version = "0.0.1"
+version = "0.1.1"
 description = "Use InertiaJS with Starlette apps"
 authors = ["Tony Lykke <tony@roganartu.com>"]
 license = "MIT"
