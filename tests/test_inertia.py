@@ -1,5 +1,6 @@
 import json
-from typing import Any, Callable, Dict, Optional
+import re
+from typing import Any, Callable, Dict, Optional, Union
 
 import bs4
 import pytest
@@ -300,6 +301,70 @@ class TestMiddleware:
             "version": "foo",
             "url": "/",
         }
+
+    @pytest.mark.parametrize(
+        "pattern, req_path, expected_status",
+        [
+            # No path regex, should match everything
+            [None, "/foo", 409],
+            [None, "/bar", 409],
+            [None, "/baz", 409],
+            # Bad path should 409 too, I think
+            # I guess the refresh this forces will itself get a 404 instead?
+            [None, "/notfound", 409],
+            # Uncompiled regex should be compiled and match the expected paths
+            [r"/(foo|bar)", "/foo", 409],
+            [r"/(foo|bar)", "/bar", 409],
+            [r"/(foo|bar)", "/baz", 200],
+            # Bad path should still 404
+            [r"/(foo|bar)", "/notfound", 404],
+            # Precompiled regex should also work
+            [re.compile(r"/(foo|bar)"), "/foo", 409],
+            [re.compile(r"/(foo|bar)"), "/bar", 409],
+            [re.compile(r"/(foo|bar)"), "/baz", 200],
+            # Bad path should still 404
+            [re.compile(r"/(foo|bar)"), "/notfound", 404],
+        ],
+    )
+    def test_path_matching(
+        self,
+        pattern: Optional[Union[str, re.Pattern]],
+        req_path: str,
+        expected_status: int,
+    ) -> None:
+        app = starlette.applications.Starlette(
+            debug=True,
+            routes=[
+                starlette.routing.Route(
+                    "/foo",
+                    lambda x: target.InertiaResponse({"foo": "bar"}, component="Test"),
+                ),
+                starlette.routing.Route(
+                    "/bar",
+                    lambda x: target.InertiaResponse({"foo": "bar"}, component="Test"),
+                ),
+                starlette.routing.Route(
+                    "/baz",
+                    lambda x: target.InertiaResponse({"foo": "bar"}, component="Test"),
+                ),
+            ],
+            middleware=[
+                starlette.middleware.Middleware(
+                    target.InertiaMiddleware,
+                    asset_version="foo",
+                    paths=pattern,
+                ),
+            ],
+        )
+
+        client = starlette.testclient.TestClient(app)
+        headers = {
+            "x-requested-with": "XMLHttpRequest",
+            "x-inertia": "true",
+            # No version, to force a 409 if the middleware matches
+        }
+        response = client.get(req_path, headers=headers)
+        assert response.status_code == expected_status
 
 
 # TODO add test that asserts that passed templates are rendered correctly

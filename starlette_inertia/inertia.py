@@ -3,6 +3,7 @@ FastAPI bindings for Inertia.js
 """
 import functools
 import pathlib
+import re
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import jinja2
@@ -77,6 +78,7 @@ class InertiaMiddleware:
         asset_version: Union[Callable[[], str], str],
         scripts: Optional[List[str]] = None,
         links: Optional[List[str]] = None,
+        paths: Optional[Union[str, re.Pattern]] = None,
         index_template_path: Optional[Union[str, pathlib.Path]] = None,
         routes_js_template_path: Optional[Union[str, pathlib.Path]] = None,
         props_callback: Optional[
@@ -86,17 +88,19 @@ class InertiaMiddleware:
         self.app = app
         self.asset_version = asset_version
         self.props_callback = props_callback
+        self.paths = None
+        if paths is not None:
+            self.paths = paths if isinstance(paths, re.Pattern) else re.compile(paths)
 
-        template_path = (
-            pathlib.Path(index_template_path or __file__).parent / "index.html.jinja2"
-        )
+        template_path = pathlib.Path(__file__).parent / "index.html.jinja2"
+        if index_template_path is not None:
+            template_path = pathlib.Path(index_template_path)
         with open(template_path) as f:
             self.template = jinja2.Template(f.read())
 
-        routes_template_path = (
-            pathlib.Path(routes_js_template_path or __file__).parent
-            / "routes.js.jinja2"
-        )
+        routes_template_path = pathlib.Path(__file__).parent / "routes.js.jinja2"
+        if routes_js_template_path is not None:
+            routes_template_path = pathlib.Path(routes_js_template_path)
         with open(routes_template_path) as f:
             self.routes_template = jinja2.Template(f.read())
 
@@ -122,6 +126,10 @@ class InertiaMiddleware:
         the server immediately returns a 409 Conflict response (only for GET request),
         and includes the URL in a X-Inertia-Location header.
         """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         request = starlette.requests.Request(scope, receive)
         request.state.inertia_version = self._inertia_version
         request.state.inertia_props_callback = self.props_callback
@@ -134,8 +142,10 @@ class InertiaMiddleware:
             ),
         )
         wrapped_send = functools.partial(responder.send, send=send, request=request)
-        if scope["type"] != "http":
-            await self.app(scope, receive, wrapped_send)
+
+        if self.paths is not None and not self.paths.match(request.url.path):
+            # Not a path we want to watch, skip it.
+            await self.app(scope, receive, send)
             return
 
         method = scope["method"]
