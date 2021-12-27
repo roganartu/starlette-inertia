@@ -22,8 +22,8 @@ class InertiaResponse(starlette.responses.JSONResponse):
         super().__init__(*args, **kwargs)
 
     def render(self, content: Any) -> bytes:
-        # Delay rendering until we've gotten a header back from the send of
-        # http.response.start.
+        # Delay rendering until we've gotten the version and url from the request state.
+        # This is done by __call__ (when receiving http.response.start) below.
         self.content = content
         return b""
 
@@ -200,6 +200,7 @@ class InertiaResponder:
         self.template = template
         self.extra_template_data = extra_template_data
         self.rendered_routes_js = rendered_routes_js
+        self.body = None
 
     async def send(
         self,
@@ -259,22 +260,27 @@ class InertiaResponder:
                 self.message = message
             return
         elif message["type"] == "http.response.body" and not self.started:
-            self.started = True
-            body = message.get("body", b"")
             more_body = message.get("more_body", False)
-            # TODO figure out what to do if more_body is true, how can we handle that?
-            if more_body:
-                raise ValueError("Streaming responses are not supported.")
+            # TODO does this break things? I don't know the implications of not sending
+            # some intermediate body messages.
             if as_html:
+                # If we need to render the JSON inside the HTML, we can't stream it.
+                if self.body is None:
+                    self.body = message.get("body", b"")
+                else:
+                    self.body += message.get("body", b"")
+                if more_body:
+                    return
                 # TODO call provided callable if not None, pass in jinja context
                 # TODO should we only do this on 2xx?
                 template_context = {
-                    "body": body,
+                    "body": self.body,
                     "routes_script": self.rendered_routes_js,
                 }
                 template_context.update(self.extra_template_data)
                 message["body"] = self.template.render(**template_context).encode()
                 headers["Content-Length"] = str(len(message["body"]))
+            self.started = True
             await send(self.message)
             await send(message)
         else:
